@@ -143,11 +143,6 @@ const API_SITES = {
         api: 'https://ikunzyapi.com/api.php/provide/vod',
         name: 'iKun资源'
     },
-    "1080zyku": {
-        api: "https://api.1080zyku.com/inc/api_mac10.php",
-        name: "TV-1080资源",
-        detail: "https://api.1080zyku.com"
-    },
     ckzy2:{
         api: "https://ckzy.me/api.php/provide/vod",
         name: "TV-CK资源2",
