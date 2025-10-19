@@ -10,16 +10,28 @@ on:
 
 jobs:
   sync_latest_from_upstream:
-    name: Sync latest commits from upstream repo
+    name: Sync upstream with manual conflict check for js/config
     runs-on: ubuntu-latest
     if: ${{ github.event.repository.fork }}
 
     steps:
-      # Step 1: run a standard checkout action
+      # 拉取本地仓库（含你的 js/config）
       - name: Checkout target repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Step 2: run the sync action
+      # 备份本地 js/config 到临时文件
+      - name: Backup local js/config
+        run: |
+          if [ -f "js/config" ]; then
+            cp js/config /tmp/local_js_config
+            echo "本地 js/config 已备份到 /tmp/local_js_config"
+          else
+            echo "本地无 js/config，记录为新增文件" > /tmp/local_js_config_status
+          fi
+
+      # 同步上游仓库（可能覆盖 js/config）
       - name: Sync upstream changes
         id: sync
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
@@ -29,8 +41,64 @@ jobs:
           target_sync_branch: main
           target_repo_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # 检测 js/config 是否有冲突（本地备份 vs 同步后的上游版本）
+      - name: Check for conflicts in js/config
+        id: conflict_check
+        run: |
+          # 情况1：本地原本有 js/config，同步后文件存在且内容不同 → 冲突
+          if [ -f "/tmp/local_js_config" ] && [ -f "js/config" ]; then
+            if ! diff /tmp/local_js_config js/config > /dev/null; then
+              echo "conflict=true" >> $GITHUB_OUTPUT
+              echo "发现 js/config 冲突：本地版本与上游版本不同"
+              exit 0
+            fi
+          # 情况2：本地原本有，同步后被上游删除 → 视为冲突（上游删除了你的文件）
+          elif [ -f "/tmp/local_js_config" ] && [ ! -f "js/config" ]; then
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            echo "发现 js/config 冲突：上游删除了该文件，但本地存在版本"
+            exit 0
+          # 情况3：本地原本没有，同步后上游新增 → 视为冲突（上游新增了你没有的文件）
+          elif [ ! -f "/tmp/local_js_config" ] && [ -f "js/config" ] && [ ! -f "/tmp/local_js_config_status" ]; then
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            echo "发现 js/config 冲突：上游新增了该文件，本地原本没有"
+            exit 0
+          fi
+          # 无冲突
+          echo "conflict=false" >> $GITHUB_OUTPUT
+          echo "js/config 无冲突，自动恢复本地版本"
+
+      # 若有冲突：暂停流程，提醒手动处理（不自动提交）
+      - name: Handle conflict (manual intervention required)
+        if: steps.conflict_check.outputs.conflict == 'true'
+        run: |
+          echo "❌ js/config 存在冲突！请手动检查并合并："
+          echo "1. 打开你的仓库：${{ github.repositoryUrl }}"
+          echo "2. 比较本地版本与上游版本的 js/config"
+          echo "3. 手动决定保留/合并内容后提交"
+          exit 1  # 终止 workflow，避免自动提交
+
+      # 若无冲突：自动恢复本地版本并提交
+      - name: Restore local js/config (no conflict)
+        if: steps.conflict_check.outputs.conflict == 'false'
+        run: |
+          if [ -f "/tmp/local_js_config" ]; then
+            cp /tmp/local_js_config js/config
+            echo "已恢复 js/config 为本地版本"
+          else
+            echo "本地无 js/config，无需恢复"
+          fi
+
+      - name: Push restored file (no conflict)
+        if: steps.conflict_check.outputs.conflict == 'false'
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add js/config
+          git commit -m "Auto-restore local js/config (no conflicts)" || echo "js/config 无变化，无需提交"
+          git push origin main
+
       - name: Sync check
         if: failure()
         run: |
-          echo "[Error] Due to a change in the workflow file of the upstream repository, GitHub has automatically suspended the scheduled automatic update. You need to manually sync your fork."
+          echo "[Error] Upstream workflow change may have caused a suspension. Please sync manually."
           exit 1
